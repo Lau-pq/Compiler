@@ -6,6 +6,7 @@ import cn.edu.hitsz.compiler.utils.FileUtils;
 
 import java.text.CharacterIterator;
 import java.util.ArrayList;
+import java.util.Currency;
 import java.util.List;
 import java.util.stream.StreamSupport;
 
@@ -22,6 +23,7 @@ public class LexicalAnalyzer {
     private String sourceCodeBuffer;
     private List<Token> tokens;
     private int position;
+    private StringBuilder tokenBuilder;
 
     public LexicalAnalyzer(SymbolTable symbolTable) {
         this.symbolTable = symbolTable;
@@ -48,84 +50,82 @@ public class LexicalAnalyzer {
     public void run() {
         // TODO: 自动机实现的词法分析过程
         position = 0;
-        int nowState = 0;
+        State state = State.START;
+        tokenBuilder = new StringBuilder();
+
         while(position < sourceCodeBuffer.length()) {
             char ch = sourceCodeBuffer.charAt(position);
-            switch (nowState) {
-                case 0 -> {
-                    if (Character.isWhitespace(ch)) {
+
+            switch (state) {
+                case START -> {
+                    if (Character.isWhitespace(ch)) { // 空格
                         position++;
                     } else if (isLetterOrUnderscore(ch)) {
-                        nowState = 1;
+                        state = State.STRING;
+                        step(ch);
                     } else if (Character.isDigit(ch)) {
-                        nowState = 2;
+                        state = State.NUMBER;
+                        step(ch);
                     } else {
-                        nowState = 3;
+                        state = State.SYMBOL;
                     }
                 }
-                case 1 -> {
-                    processString();
-                    nowState = 0;
+                case STRING -> {
+                    if(isLetterOrDigitOrUnderscore(ch)) {
+                        step(ch);
+                    } else {
+                        addString(tokenBuilder.toString());
+                        state = State.START;
+                        tokenBuilder.setLength(0);
+                    }
                 }
-                case 2 -> {
-                    processNumber();
-                    nowState = 0;
+                case NUMBER -> {
+                    if(Character.isDigit(ch)) {
+                        step(ch);
+                    } else {
+                        addNumber(tokenBuilder.toString());
+                        state = State.START;
+                        tokenBuilder.setLength(0);
+                    }
                 }
-                case 3 -> {
-                    processSymbol();
-                    nowState = 0;
+                case SYMBOL -> {
+                   addSymbol(ch);
+                   state = State.START;
+                   position++;
                 }
             }
         }
+
         tokens.add(Token.eof());
+
     }
 
-    private void processString() {
-        StringBuilder wordbuilder = new StringBuilder();
-        while(position < sourceCodeBuffer.length()){
-            char ch = sourceCodeBuffer.charAt(position);
-            if (isLetterOrDigitOrUnderscore(ch)) {
-                wordbuilder.append(ch);
-                position++;
-            } else {
-                break;
-            }
-        }
-        String word = wordbuilder.toString();
+    private void step(char ch) {
+        tokenBuilder.append(ch);
+        position++;
+    }
+
+    private void addString(String word) {
         if (TokenKind.isAllowed(word)){
             tokens.add(Token.simple(TokenKind.fromString(word)));
         } else {
             tokens.add(Token.normal(TokenKind.fromString("id"), word));
-            System.out.println(word);
             if (!symbolTable.has(word)) {
                 symbolTable.add(word);
             }
         }
     }
 
-    private void processNumber() {
-        StringBuilder numberbuilder = new StringBuilder();
-        while(position < sourceCodeBuffer.length()){
-            char ch = sourceCodeBuffer.charAt(position);
-            if (Character.isDigit(ch)) {
-                numberbuilder.append(ch);
-                position++;
-            } else {
-                break;
-            }
-        }
-        tokens.add(Token.normal(TokenKind.fromString("IntConst"), numberbuilder.toString()));
+    private void addNumber(String number) {
+        tokens.add(Token.normal(TokenKind.fromString("IntConst"), number));
     }
 
-    private void processSymbol() {
-        StringBuilder symbolbuilder = new StringBuilder();
-        char ch = sourceCodeBuffer.charAt(position);
-        if (ch == ';') {
+    private void addSymbol(char symbol) {
+        if (symbol == ';') {
             tokens.add(Token.simple(TokenKind.fromString("Semicolon")));
         } else {
-            tokens.add(Token.simple(TokenKind.fromString(String.valueOf(ch))));
+            tokens.add(Token.simple(TokenKind.fromString(String.valueOf(symbol))));
         }
-        position++;
     }
 
     private boolean isLetterOrUnderscore(char ch) {
@@ -135,6 +135,11 @@ public class LexicalAnalyzer {
     private boolean isLetterOrDigitOrUnderscore(char ch){
         return Character.isLetterOrDigit(ch) || ch == '_';
     }
+
+    private enum State {
+        START, STRING, NUMBER, SYMBOL
+    }
+
 
     /**
      * 获得词法分析的结果, 保证在调用了 run 方法之后调用
@@ -155,6 +160,5 @@ public class LexicalAnalyzer {
             StreamSupport.stream(getTokens().spliterator(), false).map(Token::toString).toList()
         );
     }
-
 
 }
