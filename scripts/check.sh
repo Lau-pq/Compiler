@@ -1,0 +1,1 @@
+python -u check-result.py 4 ../data/std ../data/out

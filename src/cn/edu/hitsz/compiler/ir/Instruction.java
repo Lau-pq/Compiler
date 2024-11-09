@@ -79,6 +79,22 @@ public class Instruction {
         return operands.get(0);
     }
 
+    public boolean lhsIsImmediate() {
+        return getLHS().isImmediate();
+    }
+
+    public boolean rhsIsImmediate() {
+        return getRHS().isImmediate();
+    }
+
+    public boolean haveTwoImmediate() {
+        return lhsIsImmediate() && rhsIsImmediate();
+    }
+
+    public boolean haveOneImmediate() {
+        return (lhsIsImmediate() || rhsIsImmediate()) && !haveTwoImmediate();
+    }
+
 
     //============================== 基础设施 ==============================
     @Override

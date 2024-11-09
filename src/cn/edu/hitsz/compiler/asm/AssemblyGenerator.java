@@ -1,9 +1,13 @@
 package cn.edu.hitsz.compiler.asm;
 
 import cn.edu.hitsz.compiler.NotImplementedException;
-import cn.edu.hitsz.compiler.ir.Instruction;
+import cn.edu.hitsz.compiler.ir.*;
+import cn.edu.hitsz.compiler.utils.FileUtils;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 
 /**
@@ -22,6 +26,15 @@ import java.util.List;
  */
 public class AssemblyGenerator {
 
+    private List<Instruction> instructions = new ArrayList<>();
+    private BMap<IRVariable, Register> registerMap = new BMap<>();
+    private Map<IRVariable, Integer> lastIndexMap = new HashMap<>();
+    private List<String> assemblyCodes = new ArrayList<>(List.of(".text"));
+
+    enum Register {
+        t0, t1, t2, t3, t4, t5, t6
+    }
+
     /**
      * 加载前端提供的中间代码
      * <br>
@@ -32,9 +45,92 @@ public class AssemblyGenerator {
      */
     public void loadIR(List<Instruction> originInstructions) {
         // TODO: 读入前端提供的中间代码并生成所需要的信息
-        throw new NotImplementedException();
+        for (Instruction instruction: originInstructions) {
+            InstructionKind instructionKind = instruction.getKind();
+            if (instructionKind.isBinary()) {
+                IRValue lhs = instruction.getLHS();
+                IRValue rhs = instruction.getRHS();
+                IRVariable result = instruction.getResult();
+                if (instruction.haveTwoImmediate()) {
+                    int immediateResult;
+                    int lhsVal = ((IRImmediate) lhs).getValue();
+                    int rhsVal = ((IRImmediate) rhs).getValue();
+                    switch (instructionKind) {
+                        case ADD -> immediateResult = lhsVal + rhsVal;
+                        case SUB -> immediateResult = lhsVal - rhsVal;
+                        case MUL -> immediateResult = lhsVal * rhsVal;
+                        default -> throw new RuntimeException("Unsupported instruction kind");
+                    }
+                    instructions.add(Instruction.createMov(result, IRImmediate.of(immediateResult)));
+                } else if (instruction.haveOneImmediate() && instructionKind == InstructionKind.MUL) {
+                    IRVariable temp = IRVariable.temp();
+                    IRValue immediate = instruction.lhsIsImmediate() ? lhs : rhs;
+                    instructions.add(Instruction.createMov(temp, immediate));
+                    instructions.add(Instruction.createMul(result, temp, immediate));
+                } else if (instruction.lhsIsImmediate() && instructionKind == InstructionKind.SUB) {
+                    IRVariable temp = IRVariable.temp();
+                    instructions.add(Instruction.createMov(temp, lhs));
+                    instructions.add(Instruction.createSub(result, temp, rhs));
+                } else if (instruction.haveOneImmediate()) {
+                    IRValue immediate;
+                    IRValue variable;
+                    if (instruction.lhsIsImmediate()) {
+                        immediate = lhs;
+                        variable = rhs;
+                    } else {
+                        immediate = rhs;
+                        variable = lhs;
+                    }
+                    switch (instructionKind) {
+                        case ADD -> instructions.add(Instruction.createAdd(result, variable, immediate));
+                        case SUB -> instructions.add(Instruction.createSub(result, variable, immediate));
+                        default -> throw new RuntimeException("Unsupported instruction kind");
+                    }
+                } else {
+                    instructions.add(instruction);
+                }
+            } else if (instructionKind.isUnary()) {
+                instructions.add(instruction);
+            } else if (instructionKind.isReturn()) {
+                instructions.add(instruction);
+                break;
+            } else throw new RuntimeException("Unsupported instruction kind");
+        }
+
+        int instructionIndex = 0;
+        for (Instruction instruction: instructions) {
+            var operands = instruction.getOperands();
+            for (IRValue operand: operands) {
+                if (operand.isIRVariable()) {
+                    lastIndexMap.put((IRVariable) operand, instructionIndex);
+                }
+            }
+            instructionIndex ++;
+        }
+
     }
 
+    private void registerAllocation(IRValue irValue, int instructionIndex) {
+        if (irValue.isImmediate()) return;
+        IRVariable variable = (IRVariable) irValue;
+        if (registerMap.containsKey(variable)) return;
+        for (Register register: Register.values()) {
+            if (!registerMap.containsValue(register)) {
+                registerMap.replace(variable, register);
+                return;
+            }
+        }
+
+        for (Register register: Register.values()) {
+            if (instructionIndex > lastIndexMap.get(registerMap.getByValue(register))) {
+                registerMap.replace(variable, register);
+                return;
+            }
+        }
+
+        throw new RuntimeException("no available registers");
+
+    }
 
     /**
      * 执行代码生成.
@@ -47,7 +143,82 @@ public class AssemblyGenerator {
      */
     public void run() {
         // TODO: 执行寄存器分配与代码生成
-        throw new NotImplementedException();
+        int instructionIndex = 0;
+        String assemblyCode = null;
+        for (Instruction instruction: instructions) {
+            InstructionKind instructionKind = instruction.getKind();
+            switch (instructionKind) {
+                case ADD -> {
+                    IRValue lhs = instruction.getLHS();
+                    IRValue rhs = instruction.getRHS();
+                    IRVariable result = instruction.getResult();
+                    registerAllocation(lhs, instructionIndex);
+                    registerAllocation(rhs, instructionIndex);
+                    registerAllocation(result, instructionIndex);
+                    Register lhsReg = registerMap.getByKey((IRVariable) lhs);
+                    Register resultReg = registerMap.getByKey(result);
+                    if(instruction.rhsIsImmediate()) {
+                        assemblyCode = String.format("\taddi %s, %s, %s", resultReg.toString(), lhsReg.toString(), rhs);
+                    } else {
+                        Register rhsReg = registerMap.getByKey((IRVariable) rhs);
+                        assemblyCode = String.format("\tadd %s, %s, %s", resultReg.toString(), lhsReg.toString(), rhsReg.toString());
+                    }
+                }
+                case SUB -> {
+                    IRValue lhs = instruction.getLHS();
+                    IRValue rhs = instruction.getRHS();
+                    IRVariable result = instruction.getResult();
+                    registerAllocation(lhs, instructionIndex);
+                    registerAllocation(rhs, instructionIndex);
+                    registerAllocation(result, instructionIndex);
+                    Register lhsReg = registerMap.getByKey((IRVariable) lhs);
+                    Register resultReg = registerMap.getByKey(result);
+                    if(instruction.rhsIsImmediate()) {
+                        assemblyCode = String.format("\tsubi %s, %s, %s", resultReg.toString(), lhsReg.toString(), rhs);
+                    } else {
+                        Register rhsReg = registerMap.getByKey((IRVariable) rhs);
+                        assemblyCode = String.format("\tsub %s, %s, %s", resultReg.toString(), lhsReg.toString(), rhsReg.toString());
+                    }
+                }
+                case MUL -> {
+                    IRValue lhs = instruction.getLHS();
+                    IRValue rhs = instruction.getRHS();
+                    IRVariable result = instruction.getResult();
+                    registerAllocation(lhs, instructionIndex);
+                    registerAllocation(rhs, instructionIndex);
+                    registerAllocation(result, instructionIndex);
+                    Register lhsReg = registerMap.getByKey((IRVariable) lhs);
+                    Register rhsReg = registerMap.getByKey((IRVariable) rhs);
+                    Register resultReg = registerMap.getByKey(result);
+                    assemblyCode = String.format("\tmul %s, %s, %s", resultReg.toString(), lhsReg.toString(), rhsReg.toString());
+                }
+                case MOV -> {
+                    IRVariable result = instruction.getResult();
+                    IRValue from = instruction.getFrom();
+                    registerAllocation(result, instructionIndex);
+                    registerAllocation(from, instructionIndex);
+                    Register resultReg = registerMap.getByKey(result);
+                    if (from.isImmediate()) {
+                        assemblyCode = String.format("\tli %s, %s", resultReg.toString(), from);
+                    } else {
+                        Register fromReg = registerMap.getByKey((IRVariable) from);
+                        assemblyCode = String.format("\tmv %s, %s", resultReg.toString(), fromReg.toString());
+                    }
+                }
+                case RET -> {
+                    IRValue returnValue = instruction.getReturnValue();
+                    Register returnValueReg = registerMap.getByKey((IRVariable) returnValue);
+                    assemblyCode = String.format("\tmv a0, %s", returnValueReg.toString());
+                }
+            }
+            assemblyCode += "\t\t#  %s".formatted(instruction.toString());
+            assemblyCodes.add(assemblyCode);
+            instructionIndex ++;
+
+            if (instructionKind.isReturn()) {
+                break;
+            }
+        }
     }
 
 
@@ -58,7 +229,7 @@ public class AssemblyGenerator {
      */
     public void dump(String path) {
         // TODO: 输出汇编代码到文件
-        throw new NotImplementedException();
+        FileUtils.writeLines(path, assemblyCodes);
     }
 }
 
